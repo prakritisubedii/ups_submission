@@ -1,5 +1,5 @@
 
-import base64, io, sys
+import base64, io, sys, tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -96,7 +96,14 @@ class ModelController:
 
     def _decode_wav_b64(self, wav_b64: str) -> torch.Tensor:
         wav_bytes = base64.b64decode(wav_b64)
-        wav, in_sr = torchaudio.load(io.BytesIO(wav_bytes))  # [C, N]
+        try:
+            wav, in_sr = torchaudio.load(io.BytesIO(wav_bytes))  # [C, N]
+        except RuntimeError:
+            # Some torchaudio backends cannot decode file-like objects.
+            with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+                f.write(wav_bytes)
+                f.flush()
+                wav, in_sr = torchaudio.load(f.name)
         wav = torch.nan_to_num(wav, nan=0.0, posinf=1.0, neginf=-1.0)
         if wav.size(0) > 1:
             wav = wav.mean(dim=0, keepdim=True)
