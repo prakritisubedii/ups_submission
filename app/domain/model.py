@@ -92,6 +92,7 @@ class ModelController:
 
             x = self._wav_to_logmel_bt80(wav)  # moves features to CUDA
             reps = self._extract_backbone_reps(x).squeeze(0).contiguous()  # [T, 128]
+            reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
             return reps
 
     def _decode_wav_b64(self, wav_b64: str) -> torch.Tensor:
@@ -151,6 +152,7 @@ class ModelController:
         wav = self._decode_wav_b64(payload["wav_b64"])
         x = self._wav_to_logmel_bt80(wav)
         reps = self._extract_backbone_reps(x).squeeze(0).contiguous()  # [T,128]
+        reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
         return {"embedding": reps.detach().cpu().tolist(), "shape": list(reps.shape)}
 
     def batch_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
