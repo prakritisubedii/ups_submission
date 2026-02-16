@@ -8,6 +8,7 @@ import torchaudio
 
 # Works both in a real .py file (Dynabench) and in Colab notebooks
 ZIP_ROOT = Path(__file__).resolve().parents[2]
+_DEBUG_LOGMEL_STATS_PRINTED = False
 
 sys.path.insert(0, str(ZIP_ROOT / "ups_challenge_baselines"))
 
@@ -122,12 +123,34 @@ class ModelController:
         return wav
 
     def _wav_to_logmel_bt80(self, wav: torch.Tensor) -> torch.Tensor:
+        global _DEBUG_LOGMEL_STATS_PRINTED
         wav = self._pad_or_crop_10s(wav)
         wav = torch.nan_to_num(wav, nan=0.0, posinf=1.0, neginf=-1.0)
         wav = torch.clamp(wav, min=-1.0, max=1.0)
         mel = self.mel_fn(wav)  # [1, 80, T]
         mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
+        if not _DEBUG_LOGMEL_STATS_PRINTED:
+            mel_f = mel.detach().to(torch.float32)
+            print(
+                "[debug] mel pre-log stats:",
+                f"shape={tuple(mel_f.shape)}",
+                f"min={float(mel_f.min().item()):.6g}",
+                f"max={float(mel_f.max().item()):.6g}",
+                f"mean={float(mel_f.mean().item()):.6g}",
+                f"std={float(mel_f.std(unbiased=False).item()):.6g}",
+            )
         mel = torch.log(torch.clamp(mel, min=self.EPS))
+        if not _DEBUG_LOGMEL_STATS_PRINTED:
+            mel_log_f = mel.detach().to(torch.float32)
+            print(
+                "[debug] mel post-log stats:",
+                f"shape={tuple(mel_log_f.shape)}",
+                f"min={float(mel_log_f.min().item()):.6g}",
+                f"max={float(mel_log_f.max().item()):.6g}",
+                f"mean={float(mel_log_f.mean().item()):.6g}",
+                f"std={float(mel_log_f.std(unbiased=False).item()):.6g}",
+            )
+            _DEBUG_LOGMEL_STATS_PRINTED = True
         mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
         mel = mel.squeeze(0).transpose(0, 1).unsqueeze(0).contiguous()  # [1, T, 80]
         return mel.to(self.device, dtype=torch.float32)
