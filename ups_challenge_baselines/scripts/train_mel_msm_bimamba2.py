@@ -73,10 +73,16 @@ class BiMambaMSM(torch.nn.Module):
         )
         self.proj_out = torch.nn.Linear(d_model, 80)
 
-    def forward(self, x):
-        x = self.proj_in(x)
-        x = self.backbone(x)
-        return self.proj_out(x)
+    def forward(self, x, return_reps: bool = False):
+        h = self.proj_in(x)
+        reps = self.backbone(h)
+        reps_t = reps
+        if isinstance(reps, (tuple, list)):
+            reps_t = next((t for t in reps if torch.is_tensor(t)), reps[0])
+        y = self.proj_out(reps_t)
+        if return_reps:
+            return y, reps_t
+        return y
 
 
 def sample_stream(shard_files: list[str], shuffle: bool, shuffle_within_shard: bool, seed: int):

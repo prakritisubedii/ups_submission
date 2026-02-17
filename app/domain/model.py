@@ -156,26 +156,10 @@ class ModelController:
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
         global _DEBUG_LOGMEL_STATS_PRINTED
-        cache: Dict[str, torch.Tensor] = {}
-
-        def hook(_module, _inp, out):
-            out_t = out if torch.is_tensor(out) else out[0]
-            cache["reps"] = out_t
-            if not _DEBUG_LOGMEL_STATS_PRINTED and torch.is_tensor(out_t):
-                out_t_f = out_t.detach().to(torch.float32)
-                print(
-                    "[debug] hook out_t stats:",
-                    f"shape={tuple(out_t_f.shape)}",
-                    f"min={float(out_t_f.min().item()):.6g}",
-                    f"max={float(out_t_f.max().item()):.6g}",
-                    f"mean={float(out_t_f.mean().item()):.6g}",
-                    f"std={float(out_t_f.std(unbiased=False).item()):.6g}",
-                )
-
-        h = self.model.backbone.register_forward_hook(hook)
         with torch.no_grad():
-            y = self.model(x_bt80)
-        h.remove()
+            y, reps = self.model(x_bt80, return_reps=True)
+        if isinstance(reps, (tuple, list)):
+            reps = next((t for t in reps if torch.is_tensor(t)), reps[0])
         if not _DEBUG_LOGMEL_STATS_PRINTED and torch.is_tensor(y):
             y_f = y.detach().to(torch.float32)
             print(
@@ -188,7 +172,6 @@ class ModelController:
             )
         if not _DEBUG_LOGMEL_STATS_PRINTED:
             _DEBUG_LOGMEL_STATS_PRINTED = True
-        reps = cache["reps"]  # [1, T, 128]
         reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
         return reps
 
