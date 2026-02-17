@@ -185,8 +185,9 @@ class ModelController:
                         f"std={float(b_f.std(unbiased=False).item()):.6g}",
                     )
                 _DEBUG_LOGMEL_STATS_PRINTED = True
-            reps = h
-            reps = torch.nn.functional.layer_norm(reps, reps.shape[-1:])
+            mu = h.mean(dim=1, keepdim=True)
+            sigma = h.std(dim=1, keepdim=True)
+            reps = (h - mu) / (sigma + 1e-5)
         reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
         return reps
 
