@@ -155,25 +155,10 @@ class ModelController:
         return mel.to(self.device, dtype=torch.float32)
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
-        global _DEBUG_LOGMEL_STATS_PRINTED
         with torch.no_grad():
-            y, reps = self.model(x_bt80, return_reps=True)
-        if isinstance(reps, (tuple, list)):
-            reps = next((t for t in reps if torch.is_tensor(t)), reps[0])
-        if not _DEBUG_LOGMEL_STATS_PRINTED and torch.is_tensor(y):
-            y_f = y.detach().to(torch.float32)
-            print(
-                "[debug] model y stats:",
-                f"shape={tuple(y_f.shape)}",
-                f"min={float(y_f.min().item()):.6g}",
-                f"max={float(y_f.max().item()):.6g}",
-                f"mean={float(y_f.mean().item()):.6g}",
-                f"std={float(y_f.std(unbiased=False).item()):.6g}",
-            )
-        if not _DEBUG_LOGMEL_STATS_PRINTED:
-            _DEBUG_LOGMEL_STATS_PRINTED = True
-        y = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-        return y  # [1, T, 80]
+            h = self.model.proj_in(x_bt80)  # [1, T, D]
+        h = torch.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
+        return h
 
     def single_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if "wav_b64" not in payload:
