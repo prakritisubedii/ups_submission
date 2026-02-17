@@ -172,15 +172,15 @@ class ModelController:
             )
         if not _DEBUG_LOGMEL_STATS_PRINTED:
             _DEBUG_LOGMEL_STATS_PRINTED = True
-        reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
-        return reps
+        y = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+        return y  # [1, T, 80]
 
     def single_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if "wav_b64" not in payload:
             raise ValueError("payload must contain 'wav_b64'")
         wav = self._decode_wav_b64(payload["wav_b64"])
         x = self._wav_to_logmel_bt80(wav)
-        reps = self._extract_backbone_reps(x).squeeze(0).contiguous()  # [T,128]
+        reps = self._extract_backbone_reps(x).squeeze(0).contiguous()  # [T,80]
         reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
         return {"embedding": reps.detach().cpu().tolist(), "shape": list(reps.shape)}
 
