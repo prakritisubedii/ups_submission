@@ -155,8 +155,37 @@ class ModelController:
         return mel.to(self.device, dtype=torch.float32)
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
+        global _DEBUG_LOGMEL_STATS_PRINTED
         with torch.no_grad():
-            reps = self.model.proj_in(x_bt80)  # [1, T, D]
+            h = self.model.proj_in(x_bt80)  # [1, T, D]
+            b = self.model.backbone(h)
+            if not _DEBUG_LOGMEL_STATS_PRINTED:
+                print(f"[debug] backbone output type: {type(b)}")
+                if isinstance(b, (tuple, list)):
+                    print(f"[debug] backbone output length: {len(b)}")
+                    for i, elem in enumerate(b):
+                        if torch.is_tensor(elem):
+                            elem_f = elem.detach().to(torch.float32)
+                            print(
+                                f"[debug] b[{i}] stats:",
+                                f"shape={tuple(elem_f.shape)}",
+                                f"min={float(elem_f.min().item()):.6g}",
+                                f"max={float(elem_f.max().item()):.6g}",
+                                f"mean={float(elem_f.mean().item()):.6g}",
+                                f"std={float(elem_f.std(unbiased=False).item()):.6g}",
+                            )
+                elif torch.is_tensor(b):
+                    b_f = b.detach().to(torch.float32)
+                    print(
+                        "[debug] b stats:",
+                        f"shape={tuple(b_f.shape)}",
+                        f"min={float(b_f.min().item()):.6g}",
+                        f"max={float(b_f.max().item()):.6g}",
+                        f"mean={float(b_f.mean().item()):.6g}",
+                        f"std={float(b_f.std(unbiased=False).item()):.6g}",
+                    )
+                _DEBUG_LOGMEL_STATS_PRINTED = True
+            reps = h
             reps = torch.nn.functional.layer_norm(reps, reps.shape[-1:])
         reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
         return reps
