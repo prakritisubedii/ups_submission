@@ -3,3 +3,4 @@ torchaudio
 numpy
 einops
 triton
+packaging
