@@ -156,9 +156,10 @@ class ModelController:
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            h = self.model.proj_in(x_bt80)  # [1, T, D]
-        h = torch.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
-        return h
+            reps = self.model.proj_in(x_bt80)  # [1, T, D]
+            reps = torch.nn.functional.layer_norm(reps, reps.shape[-1:])
+        reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
+        return reps
 
     def single_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if "wav_b64" not in payload:
