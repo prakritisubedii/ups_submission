@@ -22,6 +22,7 @@ class ModelController:
     N_MELS = 80
     CHUNK_SEC = 10.0
     EPS = 1e-6
+    DEBUG_SHAPES = False
 
     def __init__(self, device: str = "cuda" if torch.cuda.is_available() else "cpu") -> None:
         self.initialized = True
@@ -90,8 +91,7 @@ class ModelController:
             if sample_rate != self.SR:
                 wav = torchaudio.functional.resample(wav, sample_rate, self.SR)
 
-            x = self._wav_to_logmel_bt80(wav)  # moves features to CUDA
-            reps = self._extract_backbone_reps(x).squeeze(0).contiguous()  # [T, 128]
+            reps = self._extract_backbone_reps(wav).squeeze(0).contiguous()  # [T, 128]
             reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
             return reps
 
@@ -132,10 +132,21 @@ class ModelController:
         mel = mel.squeeze(0).transpose(0, 1).unsqueeze(0).contiguous()  # [1, T, 80]
         return mel.to(self.device, dtype=torch.float32)
 
-    def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
+    def _extract_backbone_reps(self, wav: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             device = next(self.model.parameters()).device
-            x = x_bt80.to(device=device, dtype=torch.float32)
+            wav = wav.to(device="cpu", dtype=torch.float32)
+            if self.DEBUG_SHAPES:
+                print(f"[debug] wav.shape={tuple(wav.shape)}")
+            assert wav.ndim == 2 and wav.size(0) == 1, f"Expected wav shape [1, samples], got {tuple(wav.shape)}"
+
+            x = self._wav_to_logmel_bt80(wav)
+            if self.DEBUG_SHAPES:
+                print(f"[debug] x.shape={tuple(x.shape)}")
+            assert x.ndim == 3 and x.size(0) == 1 and x.size(2) == self.N_MELS, (
+                f"Expected x shape [1, T, {self.N_MELS}], got {tuple(x.shape)}"
+            )
+            x = x.to(device=device, dtype=torch.float32)
             x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
             mu = x.mean(dim=1, keepdim=True)
             sigma = x.std(dim=1, keepdim=True)
@@ -160,8 +171,7 @@ class ModelController:
         if "wav_b64" not in payload:
             raise ValueError("payload must contain 'wav_b64'")
         wav = self._decode_wav_b64(payload["wav_b64"])
-        x = self._wav_to_logmel_bt80(wav)
-        reps = self._extract_backbone_reps(x)
+        reps = self._extract_backbone_reps(wav)
         return {"embedding": reps.squeeze(0).detach().cpu().tolist()}
 
     def batch_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
