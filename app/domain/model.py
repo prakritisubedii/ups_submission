@@ -8,6 +8,7 @@ import torchaudio
 
 # Works both in a real .py file (Dynabench) and in Colab notebooks
 ZIP_ROOT = Path(__file__).resolve().parents[2]
+_DYNA_LOG = {"n": 0, "max": 25}
 
 sys.path.insert(0, str(ZIP_ROOT / "ups_challenge_baselines"))
 
@@ -105,19 +106,48 @@ class ModelController:
                 f.write(wav_bytes)
                 f.flush()
                 wav, in_sr = torchaudio.load(f.name)
+        orig_sr = int(in_sr)
+        orig_channels = int(wav.shape[0])
         wav = torch.nan_to_num(wav, nan=0.0, posinf=1.0, neginf=-1.0)
         if wav.size(0) > 1:
             wav = wav.mean(dim=0, keepdim=True)
         if in_sr != self.SR:
             wav = torchaudio.functional.resample(wav, in_sr, self.SR)
+        final_sr = int(self.SR)
+        num_samples = int(wav.shape[-1])
+        dur_sec = float(num_samples / final_sr) if final_sr > 0 else 0.0
+        self._last_audio_meta = {
+            "orig_sr": orig_sr,
+            "orig_channels": orig_channels,
+            "final_sr": final_sr,
+            "num_samples": num_samples,
+            "dur_sec": dur_sec,
+            "min": float(wav.min().item()),
+            "max": float(wav.max().item()),
+            "mean": float(wav.mean().item()),
+            "std": float(wav.std(unbiased=False).item()),
+        }
         return wav  # [1, N]
 
     def _pad_or_crop_10s(self, wav: torch.Tensor) -> torch.Tensor:
         target_len = int(self.SR * self.CHUNK_SEC)
         n = wav.size(-1)
+        self._last_padcrop = {"mode": "none", "pad_sec": 0.0, "crop_sec": 0.0}
         if n < target_len:
-            wav = torch.nn.functional.pad(wav, (0, target_len - n))
+            pad_samples = int(target_len - n)
+            self._last_padcrop = {
+                "mode": "pad",
+                "pad_sec": float(pad_samples / self.SR),
+                "crop_sec": 0.0,
+            }
+            wav = torch.nn.functional.pad(wav, (0, pad_samples))
         elif n > target_len:
+            cropped_samples = int(n - target_len)
+            self._last_padcrop = {
+                "mode": "crop",
+                "pad_sec": 0.0,
+                "crop_sec": float(cropped_samples / self.SR),
+            }
             wav = wav[..., :target_len]
         return wav
 
@@ -158,7 +188,48 @@ class ModelController:
         if "wav_b64" not in payload:
             raise ValueError("payload must contain 'wav_b64'")
         wav = self._decode_wav_b64(payload["wav_b64"])
+        # --- DYNA LOG (print ASAP after decode) ---
+        if _DYNA_LOG["n"] < _DYNA_LOG["max"]:
+            i = _DYNA_LOG["n"]
+            _DYNA_LOG["n"] += 1
+
+            meta = getattr(self, "_last_audio_meta", None) or {}
+            pc = getattr(self, "_last_padcrop", None) or {"mode": "none", "pad_sec": 0.0, "crop_sec": 0.0}
+
+            msg = (
+                f"[DYNA_LOG {i}] "
+                f"orig_sr={meta.get('orig_sr')} ch={meta.get('orig_channels')} "
+                f"final_sr={meta.get('final_sr')} dur={meta.get('dur_sec', float('nan')):.3f}s "
+                f"min={meta.get('min', float('nan')):.4f} max={meta.get('max', float('nan')):.4f} "
+                f"mean={meta.get('mean', float('nan')):.4f} std={meta.get('std', float('nan')):.4f}"
+            )
+            print(msg, file=sys.stderr, flush=True)
+        # --- end DYNA LOG ---
         x = self._wav_to_logmel_bt80(wav)
+        if _DYNA_LOG["n"] < _DYNA_LOG["max"]:
+            i = _DYNA_LOG["n"]
+            meta = getattr(self, "_last_audio_meta", {}) or {}
+            padcrop = getattr(self, "_last_padcrop", {}) or {}
+            mode = padcrop.get("mode", "none")
+            pad_sec = float(padcrop.get("pad_sec", 0.0) or 0.0)
+            crop_sec = float(padcrop.get("crop_sec", 0.0) or 0.0)
+            print(
+                (
+                    f"[DYNA_LOG {i}] "
+                    f"orig_sr={meta.get('orig_sr', 'na')} "
+                    f"ch={meta.get('orig_channels', 'na')} "
+                    f"final_sr={meta.get('final_sr', 'na')} "
+                    f"dur={float(meta.get('dur_sec', 0.0) or 0.0):.3f}s "
+                    f"min={float(meta.get('min', 0.0) or 0.0):.6f} "
+                    f"max={float(meta.get('max', 0.0) or 0.0):.6f} "
+                    f"mean={float(meta.get('mean', 0.0) or 0.0):.6f} "
+                    f"std={float(meta.get('std', 0.0) or 0.0):.6f} "
+                    f"padcrop={mode}:{pad_sec:.3f}s/{crop_sec:.3f}s"
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+            _DYNA_LOG["n"] += 1
         reps = self._extract_backbone_reps(x)
         return {"embedding": reps.squeeze(0).detach().cpu().tolist()}
 
