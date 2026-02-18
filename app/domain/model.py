@@ -134,6 +134,8 @@ class ModelController:
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
+            x_bt80 = x_bt80.to(self.device, dtype=torch.float32)
+            x_bt80 = torch.nan_to_num(x_bt80, nan=0.0, posinf=0.0, neginf=0.0)
             mu = x_bt80.mean(dim=1, keepdim=True)
             sigma = x_bt80.std(dim=1, keepdim=True)
             x_bt80 = (x_bt80 - mu) / (sigma + 1e-5)
