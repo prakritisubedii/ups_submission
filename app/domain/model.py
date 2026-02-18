@@ -134,7 +134,8 @@ class ModelController:
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            x = x_bt80.to(dtype=torch.float32)
+            device = next(self.model.parameters()).device
+            x = x_bt80.to(device=device, dtype=torch.float32)
             x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
             mu = x.mean(dim=1, keepdim=True)
             sigma = x.std(dim=1, keepdim=True)
