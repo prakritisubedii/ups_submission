@@ -138,10 +138,10 @@ class ModelController:
             x_bt80 = torch.nan_to_num(x_bt80, nan=0.0, posinf=0.0, neginf=0.0)
             mu = x_bt80.mean(dim=1, keepdim=True)
             sigma = x_bt80.std(dim=1, keepdim=True)
-            x_bt80 = (x_bt80 - mu) / (sigma + 1e-5)
-            x_bt80 = torch.nan_to_num(x_bt80, nan=0.0, posinf=0.0, neginf=0.0)
+            x_norm = (x_bt80 - mu) / (sigma + 1e-5)
+            x_norm = torch.nan_to_num(x_norm, nan=0.0, posinf=0.0, neginf=0.0)
 
-            h = self.model.proj_in(x_bt80)  # [1, T, D]
+            h = self.model.proj_in(x_norm)  # [1, T, D]
             reps = self.model.backbone(h)
             if isinstance(reps, (tuple, list)):
                 reps = reps[0]
