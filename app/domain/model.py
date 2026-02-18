@@ -142,9 +142,16 @@ class ModelController:
             x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
             h = self.model.proj_in(x)  # [1, T, D]
+            h = torch.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
             reps = self.model.backbone(h)
             if isinstance(reps, (tuple, list)):
                 reps = reps[0]
+            if not torch.is_tensor(reps):
+                raise TypeError(f"Expected tensor output from backbone, got {type(reps).__name__}")
+            reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
+            mu = reps.mean(dim=1, keepdim=True)
+            sigma = reps.std(dim=1, keepdim=True)
+            reps = (reps - mu) / (sigma + 1e-5)
             reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
             return reps
 
