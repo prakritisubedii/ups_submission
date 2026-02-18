@@ -136,17 +136,22 @@ class ModelController:
         """Project log-mel features and return backbone representations [1, T, 128]."""
         with torch.no_grad():
             device = next(self.model.parameters()).device
-            x_bt80 = x_bt80.to(device=device, dtype=torch.float32)
+            x_bt80 = x_bt80.to(device=device, dtype=torch.float32).contiguous()
             h = self.model.proj_in(x_bt80)  # [1, T, D]
             h = torch.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
             mu = h.mean(dim=1, keepdim=True)
             sigma = h.std(dim=1, keepdim=True)
-            h = (h - mu) / (sigma + 1e-5)
+            h = ((h - mu) / (sigma + 1e-5)).contiguous()
+            h = torch.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
 
             b = self.model.backbone(h)
             if isinstance(b, (tuple, list)):
                 b = b[0]
             b = torch.nan_to_num(b, nan=0.0, posinf=0.0, neginf=0.0)
+            b_mu = b.mean(dim=1, keepdim=True)
+            b_sigma = b.std(dim=1, keepdim=True)
+            b = (b - b_mu) / (b_sigma + 1e-5)
+            b = torch.nan_to_num(b, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
             return b
 
     def single_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
