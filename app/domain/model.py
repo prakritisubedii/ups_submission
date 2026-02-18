@@ -134,14 +134,14 @@ class ModelController:
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            x_bt80 = x_bt80.to(self.device, dtype=torch.float32)
-            x_bt80 = torch.nan_to_num(x_bt80, nan=0.0, posinf=0.0, neginf=0.0)
-            mu = x_bt80.mean(dim=1, keepdim=True)
-            sigma = x_bt80.std(dim=1, keepdim=True)
-            x_norm = (x_bt80 - mu) / (sigma + 1e-5)
-            x_norm = torch.nan_to_num(x_norm, nan=0.0, posinf=0.0, neginf=0.0)
+            x = x_bt80.to(dtype=torch.float32)
+            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+            mu = x.mean(dim=1, keepdim=True)
+            sigma = x.std(dim=1, keepdim=True)
+            x = (x - mu) / (sigma + 1e-5)
+            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
-            h = self.model.proj_in(x_norm)  # [1, T, D]
+            h = self.model.proj_in(x)  # [1, T, D]
             reps = self.model.backbone(h)
             if isinstance(reps, (tuple, list)):
                 reps = reps[0]
