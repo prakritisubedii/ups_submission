@@ -97,23 +97,16 @@ class ModelController:
         self.d_model = 128
 
         ckpt_path = ZIP_ROOT / "app" / "resources" / "ckpt_step_11000_infer.pt"
-        print("DEBUG ckpt_path:", ckpt_path)
-        print("DEBUG exists:", ckpt_path.exists())
-
         ckpt = {}
         if ckpt_path.exists():
             ckpt = self._load_checkpoint(ckpt_path)
 
-        print("DEBUG ckpt keys:", list(ckpt.keys()))
-
         cfg = ckpt.get("cfg", {})
         d_model = cfg.get("d_model", 128)
         num_layers = cfg.get("num_layers", 1)
-        print("DEBUG d_model:", d_model, "num_layers:", num_layers)
         self.d_model = d_model
 
         state = ckpt.get("model_state", {})
-        print("DEBUG state params:", sum(v.numel() for v in state.values()))
 
         # CPU-safe fallback path (used when CUDA/Triton is not available).
         self.fallback_proj = torch.nn.Linear(80, d_model)
@@ -135,25 +128,19 @@ class ModelController:
         use_cuda_backend = (
             requested_device.type == "cuda" and torch.cuda.is_available() and BiMambaMSM is not None
         )
-        print("DEBUG use_cuda_backend:", use_cuda_backend)
         if use_cuda_backend:
             self.device = requested_device
             try:
-                print("DEBUG step A: instantiating model...")
+                self.device = requested_device
                 self.model = BiMambaMSM(d_model=d_model, num_layers=num_layers).to(self.device)
-                print("DEBUG step B: adding lid_head...")
                 if "lid_head.weight" in state:
                     n_lids = state["lid_head.weight"].shape[0]
                     self.model.lid_head = torch.nn.Linear(d_model, n_lids).to(self.device)
-                print("DEBUG step C: load_state_dict...")
                 if state:
                     self.model.load_state_dict(state, strict=True)
-                print("DEBUG step D: eval()...")
                 self.model.eval()
                 self.backend = "bimamba_cuda"
-                print("DEBUG backend set to bimamba_cuda")
-            except Exception as e:
-                print("DEBUG EXCEPTION IN CUDA BLOCK:", type(e).__name__, e)
+            except Exception:
                 # If CUDA kernels fail to initialize on runner, fall back to CPU-safe path.
                 self.model = None
                 self.backend = "cpu_fallback"
