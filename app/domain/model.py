@@ -29,7 +29,7 @@ class ModelController:
     N_MELS = 80
     CHUNK_SEC = 10.0
     EPS = 1e-6
-    OUTPUT_DIM = 512
+    OUTPUT_DIM = 768
 
     @staticmethod
     def _decode_wav_bytes_stdlib(wav_bytes: bytes) -> (torch.Tensor, int):
@@ -197,6 +197,7 @@ class ModelController:
                 reps = self._extract_backbone_reps(x)  # [1, T, D]
                 reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
                 emb = reps.squeeze(0).mean(dim=0)  # [D]
+                emb = self._project_to_output_dim(emb)
                 emb = F.normalize(emb, dim=-1)
                 return emb.detach().cpu().float()
 
@@ -219,6 +220,7 @@ class ModelController:
             reps = self._extract_backbone_reps(x)  # [1, T, D]
             reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
             emb = reps.squeeze(0).mean(dim=0)  # [D]
+            emb = self._project_to_output_dim(emb)
             emb = F.normalize(emb, dim=-1)
             return emb.detach().cpu().float()
 
