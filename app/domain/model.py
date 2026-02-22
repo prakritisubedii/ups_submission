@@ -30,9 +30,7 @@ class ModelController:
         if self.device.type != "cuda":
             raise RuntimeError("CUDA is required (Bi-Mamba2/Triton kernels).")
 
-        ckpt_path = ZIP_ROOT / "submit_app" / "resources" / "ckpt_step_11000_infer.pt"
-        if not ckpt_path.exists():
-            ckpt_path = ZIP_ROOT / "app" / "resources" / "ckpt_step_11000_infer.pt"
+        ckpt_path = ZIP_ROOT / "app" / "resources" / "ckpt_step_11000_infer.pt"
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
 
@@ -48,10 +46,18 @@ class ModelController:
                 ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
             except TypeError:
                 ckpt = torch.load(str(ckpt_path), map_location="cpu")
-        d_model = ckpt["cfg"]["d_model"]
+        cfg = ckpt.get("cfg", {})
+        d_model = cfg.get("d_model", 128)
+        num_layers = cfg.get("num_layers", 1)
 
-        self.model = BiMambaMSM(d_model=d_model).to(self.device).eval()
-        self.model.load_state_dict(ckpt["model_state"], strict=True)
+        self.model = BiMambaMSM(d_model=d_model, num_layers=num_layers).to(self.device)
+        state = ckpt["model_state"]
+        if "lid_head.weight" in state:
+            n_lids = state["lid_head.weight"].shape[0]
+            self.model.lid_head = torch.nn.Linear(d_model, n_lids).to(self.device)
+
+        self.model.load_state_dict(state, strict=True)
+        self.model.eval()
 
         self.mel_fn = torchaudio.transforms.MelSpectrogram(
             sample_rate=self.SR,
@@ -133,19 +139,14 @@ class ModelController:
         return mel.to(self.device, dtype=torch.float32)
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
-        """Project log-mel features and return backbone representations [1, T, 128]."""
         with torch.no_grad():
-            device = next(self.model.parameters()).device
-            x_bt80 = x_bt80.to(device=device, dtype=torch.float32).contiguous()
-            h = self.model.proj_in(x_bt80)  # [1, T, D]
-            h = torch.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
-            h = torch.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
-
-            b = self.model.backbone(h)
-            if isinstance(b, (tuple, list)):
-                b = b[0]
-            b = torch.nan_to_num(b, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
-            return b
+            x_bt80 = x_bt80.to(
+                device=next(self.model.parameters()).device,
+                dtype=torch.float32,
+            ).contiguous()
+            _, hidden = self.model(x_bt80)   # forward returns (pred, hidden); use hidden
+            hidden = torch.nan_to_num(hidden, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
+            return hidden
 
     def single_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if "wav_b64" not in payload:
