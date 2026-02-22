@@ -15,12 +15,10 @@ sys.path.insert(0, str(ZIP_ROOT / "ups_challenge_baselines"))
 
 BiMambaMSM = None
 CUDA_AVAILABLE = torch.cuda.is_available()
-
-if CUDA_AVAILABLE:
-    try:
-        from scripts.train_mel_msm_bimamba2 import BiMambaMSM  # noqa: E402
-    except Exception:
-        BiMambaMSM = None
+try:
+    from scripts.train_mel_msm_bimamba2 import BiMambaMSM  # noqa: E402
+except Exception:
+    BiMambaMSM = None
 
 
 class ModelController:
@@ -31,6 +29,7 @@ class ModelController:
     N_MELS = 80
     CHUNK_SEC = 10.0
     EPS = 1e-6
+    OUTPUT_DIM = 512
 
     @staticmethod
     def _decode_wav_bytes_stdlib(wav_bytes: bytes) -> (torch.Tensor, int):
@@ -126,7 +125,9 @@ class ModelController:
                 self.fallback_out_norm.weight.copy_(state["final_norm.weight"])
                 self.fallback_out_norm.bias.copy_(state["final_norm.bias"])
 
-        use_cuda_backend = requested_device.type == "cuda" and torch.cuda.is_available() and BiMambaMSM is not None
+        use_cuda_backend = (
+            requested_device.type == "cuda" and torch.cuda.is_available() and BiMambaMSM is not None
+        )
         if use_cuda_backend:
             self.device = requested_device
             try:
@@ -145,6 +146,24 @@ class ModelController:
                 self.device = torch.device("cpu")
         else:
             self.device = torch.device("cpu")
+
+        if BiMambaMSM is not None and self.model is None:
+            try:
+                self.device = torch.device("cpu")
+                with torch.no_grad():
+                    self.model = BiMambaMSM(d_model=d_model, num_layers=num_layers).to("cpu")
+                self.model = self.model.float()
+                if "lid_head.weight" in state:
+                    n_lids = state["lid_head.weight"].shape[0]
+                    self.model.lid_head = torch.nn.Linear(d_model, n_lids)
+                if state:
+                    self.model.load_state_dict(state, strict=True)
+                self.model.eval()
+                self.backend = "bimamba_cpu"
+            except Exception as e:
+                self.model = None
+                self.backend = "cpu_fallback"
+                self.device = torch.device("cpu")
 
         self.fallback_proj = self.fallback_proj.to(self.device).eval()
         self.fallback_in_norm = self.fallback_in_norm.to(self.device).eval()
@@ -168,9 +187,18 @@ class ModelController:
         Returns:
             torch.Tensor: Embeddings (shape [T, D]). Returned on the model device.
         """
-        # Legacy Dynabench payload path
+        # Backward-compatible payload path
         if isinstance(input_data, dict):
             return self.single_evaluation(input_data)
+        if isinstance(input_data, str):
+            wav = self._decode_wav_b64(input_data)
+            with torch.no_grad():
+                x = self._wav_to_logmel_bt80(wav)  # [1, T, 80]
+                reps = self._extract_backbone_reps(x)  # [1, T, D]
+                reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
+                emb = reps.squeeze(0).mean(dim=0)  # [D]
+                emb = F.normalize(emb, dim=-1)
+                return emb.detach().cpu().float()
 
         if not torch.is_tensor(input_data):
             raise TypeError("input_data must be a torch.Tensor (audio) or a dict payload")
@@ -188,9 +216,11 @@ class ModelController:
                 wav = torchaudio.functional.resample(wav, sample_rate, self.SR)
 
             x = self._wav_to_logmel_bt80(wav)  # [1, T, 80]
-            reps = self._extract_backbone_reps(x).squeeze(0).contiguous()  # [T, 128]
+            reps = self._extract_backbone_reps(x)  # [1, T, D]
             reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
-            return reps
+            emb = reps.squeeze(0).mean(dim=0)  # [D]
+            emb = F.normalize(emb, dim=-1)
+            return emb.detach().cpu().float()
 
     def _decode_wav_b64(self, wav_b64: str) -> torch.Tensor:
         wav_bytes = base64.b64decode(wav_b64)
@@ -234,7 +264,7 @@ class ModelController:
 
     def _extract_backbone_reps(self, x_bt80: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            if self.backend == "bimamba_cuda" and self.model is not None:
+            if self.backend in ("bimamba_cuda", "bimamba_cpu") and self.model is not None:
                 x_bt80 = x_bt80.to(
                     device=next(self.model.parameters()).device,
                     dtype=torch.float32,
@@ -259,6 +289,11 @@ class ModelController:
             hidden = torch.nan_to_num(hidden, nan=0.0, posinf=0.0, neginf=0.0).contiguous()
             return hidden
 
+    def _project_to_output_dim(self, emb: torch.Tensor) -> torch.Tensor:
+        if emb.numel() >= self.OUTPUT_DIM:
+            return emb[: self.OUTPUT_DIM].contiguous()
+        return F.pad(emb, (0, self.OUTPUT_DIM - emb.numel()))
+
     def single_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if "wav_b64" not in payload:
             raise ValueError("payload must contain 'wav_b64'")
@@ -273,6 +308,7 @@ class ModelController:
         s2 = reps[T//2 - seg//2 : T//2 + seg//2].mean(dim=0)
         s3 = reps[T-seg:].mean(dim=0)
         emb = (s1 + s2 + s3) / 3.0
+        emb = self._project_to_output_dim(emb)
         emb = emb / (emb.norm(p=2) + 1e-12)     # L2 normalize
         return {"embedding": emb.detach().cpu().tolist()}
 
@@ -289,3 +325,6 @@ class ModelController:
 
     def batch_inference_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self.batch_evaluation(payload)
+
+
+Model = ModelController
