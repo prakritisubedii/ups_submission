@@ -36,7 +36,7 @@ class ModelController:
     N_MELS = 80
     CHUNK_SEC = 10.0
     EPS = 1e-6
-    VALID_FRAME_THRESHOLD = -19.5
+    VALID_FRAME_THRESHOLD = -13.7
     # OUTPUT_DIM matches d_model=512. Do NOT pad zeros — they hurt cosine similarity.
     OUTPUT_DIM = 512
 
