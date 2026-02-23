@@ -36,6 +36,7 @@ class ModelController:
     N_MELS = 80
     CHUNK_SEC = 10.0
     EPS = 1e-6
+    VALID_FRAME_THRESHOLD = -19.5
     # OUTPUT_DIM matches d_model=512. Do NOT pad zeros — they hurt cosine similarity.
     OUTPUT_DIM = 512
 
@@ -198,6 +199,7 @@ class ModelController:
             n_mels=self.N_MELS,
             power=2.0,
         )
+        self._inference_debug_printed = False
 
         print(
             f"[UPS_DEBUG] initialized | backend={self.backend} | device={self.device} "
@@ -226,9 +228,17 @@ class ModelController:
                 x = self._wav_to_logmel_bt80(wav)      # [1, T, 80]
                 reps = self._extract_backbone_reps(x)  # [1, T, d_model]
                 reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
-                emb = reps.squeeze(0).mean(dim=0)       # [d_model]
+                emb, valid_frames, total_frames = self._masked_mean_pool(reps, x)
                 emb = self._project_to_output_dim(emb)
                 emb = F.normalize(emb, dim=-1)
+                self._maybe_print_inference_debug(
+                    wav_len_samples=wav.size(-1),
+                    mel_shape=tuple(x.shape),
+                    hidden_shape=tuple(reps.shape),
+                    valid_frames=valid_frames,
+                    total_frames=total_frames,
+                    emb_norm=float(emb.norm(p=2).item()),
+                )
                 return emb.detach().cpu().float()
 
         if not torch.is_tensor(input_data):
@@ -250,9 +260,17 @@ class ModelController:
             x = self._wav_to_logmel_bt80(wav)          # [1, T, 80]
             reps = self._extract_backbone_reps(x)      # [1, T, d_model]
             reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
-            emb = reps.squeeze(0).mean(dim=0)           # [d_model]
+            emb, valid_frames, total_frames = self._masked_mean_pool(reps, x)
             emb = self._project_to_output_dim(emb)
             emb = F.normalize(emb, dim=-1)
+            self._maybe_print_inference_debug(
+                wav_len_samples=wav.size(-1),
+                mel_shape=tuple(x.shape),
+                hidden_shape=tuple(reps.shape),
+                valid_frames=valid_frames,
+                total_frames=total_frames,
+                emb_norm=float(emb.norm(p=2).item()),
+            )
             return emb.detach().cpu().float()
 
     def _decode_wav_b64(self, wav_b64: str) -> torch.Tensor:
@@ -284,13 +302,16 @@ class ModelController:
         return wav
 
     def _wav_to_logmel_bt80(self, wav: torch.Tensor) -> torch.Tensor:
-        wav = self._pad_or_crop_10s(wav)
+        # Keep variable-length audio; only pad minimally for stable STFT on tiny clips.
+        if wav.size(-1) < self.N_FFT:
+            wav = torch.nn.functional.pad(wav, (0, self.N_FFT - wav.size(-1)))
         wav = torch.nan_to_num(wav, nan=0.0, posinf=1.0, neginf=-1.0)
         wav = torch.clamp(wav, min=-1.0, max=1.0)
         mel = self.mel_fn(wav)  # [1, 80, T]
         mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
         mel = torch.log(torch.clamp(mel, min=self.EPS))
         mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
+        mel = torch.clamp(mel, min=-20.0, max=20.0)
         mel = mel.squeeze(0).transpose(0, 1).unsqueeze(0).contiguous()  # [1, T, 80]
         return mel.to(self.device, dtype=torch.float32)
 
@@ -326,25 +347,41 @@ class ModelController:
             return emb[: self.OUTPUT_DIM].contiguous()
         return F.pad(emb, (0, self.OUTPUT_DIM - emb.numel()))
 
+    def _masked_mean_pool(self, reps_btD: torch.Tensor, x_bt80: torch.Tensor) -> (torch.Tensor, int, int):
+        frame_energy = x_bt80.squeeze(0).mean(dim=-1)  # [T]
+        valid_mask = frame_energy > self.VALID_FRAME_THRESHOLD
+        if not bool(valid_mask.any()):
+            valid_mask = torch.ones_like(valid_mask, dtype=torch.bool)
+        reps_tD = reps_btD.squeeze(0)
+        pooled = reps_tD[valid_mask].mean(dim=0)
+        return pooled, int(valid_mask.sum().item()), int(valid_mask.numel())
+
+    def _maybe_print_inference_debug(
+        self,
+        wav_len_samples: int,
+        mel_shape: tuple,
+        hidden_shape: tuple,
+        valid_frames: int,
+        total_frames: int,
+        emb_norm: float,
+    ) -> None:
+        if self._inference_debug_printed:
+            return
+        print(f"[UPS_DEBUG] inference wav_len_samples={wav_len_samples}", flush=True)
+        print(f"[UPS_DEBUG] inference mel_shape={mel_shape}", flush=True)
+        print(f"[UPS_DEBUG] inference hidden_shape={hidden_shape}", flush=True)
+        print(f"[UPS_DEBUG] inference valid_frames={valid_frames}/{total_frames}", flush=True)
+        print(f"[UPS_DEBUG] inference final_emb_norm={emb_norm:.6f}", flush=True)
+        self._inference_debug_printed = True
+
     def single_evaluation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if "wav_b64" not in payload:
             raise ValueError("payload must contain 'wav_b64'")
         wav = self._decode_wav_b64(payload["wav_b64"])
         x = self._wav_to_logmel_bt80(wav)
         reps = self._extract_backbone_reps(x)   # [1, T, d_model]
-        reps = reps.squeeze(0)                   # [T, d_model]
-        T = reps.shape[0]
-
-        # 3-segment pooling: start / middle / end — more robust than pure mean for
-        # variable-length utterances with silence at edges.
-        seg = max(1, T // 5)
-        s1 = reps[:seg].mean(dim=0)
-        # Guard against tiny T where mid-segment could be empty
-        mid_start = max(0, T // 2 - seg // 2)
-        mid_end = min(T, T // 2 + seg // 2 + 1)
-        s2 = reps[mid_start:mid_end].mean(dim=0)
-        s3 = reps[max(0, T - seg):].mean(dim=0)
-        emb = (s1 + s2 + s3) / 3.0
+        reps = torch.nan_to_num(reps, nan=0.0, posinf=0.0, neginf=0.0)
+        emb, _, _ = self._masked_mean_pool(reps, x)
 
         emb = self._project_to_output_dim(emb)
         emb = emb / (emb.norm(p=2) + 1e-12)
